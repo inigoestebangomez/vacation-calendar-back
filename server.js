@@ -25,6 +25,13 @@ async function getDb() {
     return await dbPromise;
 }
 
+// Activar WAL para mejorar concurrencia
+(async () => {
+  const db = await dbPromise;
+  await db.exec('PRAGMA journal_mode = WAL;');
+  console.log('SQLite WAL mode enabled');
+})();
+
 // ========================= AUTENTICACIÓN =========================
 // obtener la configuración de autenticación
 app.get("/api/config", (req, res) => {
@@ -235,23 +242,61 @@ app.get("/user/:userId/photo", async (req, res) => {
 // ========================= DATABASE =============================
 // Agregar un nuevo empleado
 app.post("/employees", async (req, res) => {
-    const { email, name, admin, department } = req.body;
+    const { email, name, admin, departments } = req.body;
+    console.log("Received data:", {
+        email, name, admin, departments,
+        adminType: typeof admin, departmentsType: typeof departments
+    });
+
     if (!email) {
       return res.status(400).json({ error: "Email is required" });
     }
-  
+
     try {
-      const db = await getDb();
-      await db.run("INSERT INTO Employees (email, name, admin, department) VALUES (?, ?)", [
-        email,
-        name || null,
-        admin || false,
-        department || null,
-      ]);
-      res.status(201).json({ message: "Employee added" });
+        const db = await getDb();
+        const adminValue = admin ? 1 : 0;
+
+        const result = await runWithRetry(
+          db,
+          "INSERT INTO employees (email, name, admin) VALUES (?, ?, ?)",
+          [email, name || null, adminValue]
+        );
+
+        const employeeId = result.lastID;
+        console.log("Employee inserted with ID:", employeeId);
+
+        // Procesar varios departamentos
+        if (departments && Array.isArray(departments)) {
+            for (const department of departments) {
+                if (department && department !== 'undefined') {
+                    console.log("Linking department:", department);
+                    await runWithRetry(
+                      db,
+                      "INSERT INTO employeesDepartments (id_employee, id_department) VALUES (?, ?)",
+                      [employeeId, department]
+                    );
+                    console.log("Department relationship created");
+                }
+            }
+        } else if (departments && departments !== 'undefined') {
+            // Por compatibilidad, si solo viene uno como string
+            console.log("Linking department:", departments);
+            await runWithRetry(
+              db,
+              "INSERT INTO employeesDepartments (id_employee, id_department) VALUES (?, ?)",
+              [employeeId, departments]
+            );
+            console.log("Department relationship created");
+        }
+
+        res.status(201).json({
+            message: "Employee added successfully",
+            employeeId: employeeId
+        });
+
     } catch (error) {
-      console.error("Error adding employee:", error);
-      res.status(500).json({ error: "Error adding employee" });
+        console.error("Error adding employee:", error);
+        res.status(500).json({ error: "Error adding employee: " + error.message });
     }
 });
 
@@ -400,6 +445,51 @@ app.post("/employees_departments", async (req, res) => {
     res.status(500).json({ error: "Error adding employees_departments" });
   }
 });
+
+// Elimina un empleado
+app.delete("/employees/:id", async (req, res) => {
+  const { id } = req.params;
+
+  try {
+    const db = await getDb();
+
+    // Verificar si el empleado existe
+    const employee = await db.get("SELECT * FROM Employees WHERE id = ?", [id]);
+    if (!employee) {
+      return res.status(404).json({ error: "Employee not found" });
+    }
+
+    // Eliminar relaciones con departamentos
+    await db.run("DELETE FROM EmployeesDepartments WHERE id_employee = ?", [id]);
+
+    // Eliminar el empleado
+    const result = await db.run("DELETE FROM Employees WHERE id = ?", [id]);
+    
+    if (result.changes === 0) {
+      return res.status(404).json({ error: "Employee not found" });
+    }
+
+    res.status(200).json({ message: "Employee deleted" });
+  } catch (error) {
+    console.error("Error deleting employee:", error);
+    res.status(500).json({ error: "Error deleting employee" });
+  }
+});
+
+// Helper: Retry DB operations if busy
+async function runWithRetry(db, sql, params = [], retries = 5, delay = 200) {
+  for (let i = 0; i < retries; i++) {
+    try {
+      return await db.run(sql, params);
+    } catch (err) {
+      if (err.code === 'SQLITE_BUSY' && i < retries - 1) {
+        await new Promise(res => setTimeout(res, delay));
+      } else {
+        throw err;
+      }
+    }
+  }
+}
 
 app.listen(port, () => {
   console.log(`Server running on port ${port}`);
