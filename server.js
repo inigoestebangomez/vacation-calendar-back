@@ -239,6 +239,25 @@ app.get("/user/:userId/photo", async (req, res) => {
   }
 });
 
+app.get("api/isAdmin", async (req, res) => {
+  const email = req.query.email;
+  if (!email) {
+    return res.status(400).json({ error: "Email is required" });
+  }
+  try {
+    const db = await getDb();
+    const row = await db.get("SELECT admin FROM Employees WHERE email = ?", [email]);
+    if (!row) {
+      return res.status(404).json({ error: "Employee not found" });
+    }
+  
+    res.json({ isAdmin: row.admin === 1 });
+  } catch (error) {
+    console.error("Error checking admin status:", error);
+    res.status(500).json({ error: "Error checking admin status" });
+  }
+});
+
 // ========================= DATABASE =============================
 // Agregar un nuevo empleado
 app.post("/employees", async (req, res) => {
