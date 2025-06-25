@@ -83,29 +83,40 @@ app.post("/auth/token", async (req, res) => {
 });
 
 // ========================= USUARIO PROPIO ==============================
-// obtener el perfil del usuario
+// obtener el perfil del usuario para saber admin
 app.get("/user/profile", async (req, res) => {
-  const token = req.headers.authorization?.split(" ")[1];
+    try {
+        const token = req.headers.authorization?.replace('Bearer ', '');
+        
+        if (!token) {
+            return res.status(401).json({ error: 'No token provided' });
+        }
 
-  if (!token) {
-    return res.status(401).json({ error: "No token provided" });
-  }
+        console.log('Fetching current user info with token');
 
-  try {
-    const response = await fetch("https://graph.microsoft.com/v1.0/me", {
-      headers: { Authorization: `Bearer ${token}` },
-    });
+        const response = await fetch('https://graph.microsoft.com/v1.0/me', {
+            headers: {'Authorization': `Bearer ${token}`}
+        });
 
-    const data = await response.json();
-    if (!response.ok) {
-      return res.status(response.status).json(data);
+        if (!response.ok) {
+            const errorText = await response.text();
+            console.error('Microsoft Graph error:', response.status, errorText);
+            throw new Error('Failed to fetch user info from Microsoft Graph');
+        }
+
+        const userData = await response.json();
+        console.log('Current user data:', userData);
+        
+        // Asegurar que tenemos un email válido
+        if (!userData.mail && !userData.userPrincipalName) {
+            return res.status(400).json({ error: 'User email not found' });
+        }
+        
+        res.json(userData);
+    } catch (error) {
+        console.error('Error fetching current user:', error);
+        res.status(500).json({ error: 'Failed to fetch user information' });
     }
-
-    res.json(data);
-  } catch (error) {
-    console.error("Error getting user profile:", error);
-    res.status(500).json({ error: "Error getting user profile" });
-  }
 });
 
 // obtener foto de perfil del usuario
@@ -239,23 +250,35 @@ app.get("/user/:userId/photo", async (req, res) => {
   }
 });
 
-app.get("api/isAdmin", async (req, res) => {
-  const email = req.query.email;
-  if (!email) {
-    return res.status(400).json({ error: "Email is required" });
-  }
-  try {
-    const db = await getDb();
-    const row = await db.get("SELECT admin FROM Employees WHERE email = ?", [email]);
-    if (!row) {
-      return res.status(404).json({ error: "Employee not found" });
+// Verificación de admin
+app.get("/api/isAdmin", async (req, res) => {
+    try {
+        const email = req.query.email;
+        
+        if (!email) {
+            return res.status(400).json({ error: 'Email parameter is required' });
+        }
+
+        console.log('Checking admin status for email:', email);
+
+        const db = await getDb();
+
+        const query = 'SELECT admin FROM employees WHERE email = ? COLLATE NOCASE';
+        
+        const row = await db.get(query, [email]);
+        if (!row) {
+            console.log('User not found in database:', email);
+            return res.json({ isAdmin: false });
+        }
+
+        const isAdmin = row.admin == 1;
+        console.log(`User ${email} admin status:`, isAdmin);
+        res.json({ isAdmin });
+
+    } catch (error) {
+        console.error('Error checking admin status:', error);
+        res.status(500).json({ error: 'Failed to check admin status' });
     }
-  
-    res.json({ isAdmin: row.admin === 1 });
-  } catch (error) {
-    console.error("Error checking admin status:", error);
-    res.status(500).json({ error: "Error checking admin status" });
-  }
 });
 
 // ========================= DATABASE =============================
