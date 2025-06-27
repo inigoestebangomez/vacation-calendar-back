@@ -3,6 +3,7 @@ import cors from "cors";
 import dotenv from "dotenv";
 import sqlite3 from 'sqlite3';
 import { open } from 'sqlite';
+import { getHolidayDatesFromICS } from "./utils/holidayParser.js";
 
 dotenv.config();
 
@@ -352,8 +353,12 @@ app.get("/employees", async (req, res) => {
               e.name AS name,
               e.email AS email,
               e.admin AS admin,
+              e.city_id AS city_id,
+              c.city as city_name,
+              c.ics_file as ics_file,
               d.department AS department
             FROM Employees e
+            LEFT JOIN Cities c ON e.city_id = c.id
             INNER JOIN EmployeesDepartments ed ON e.id = ed.id_employee
             INNER JOIN Departments d ON d.id = ed.id_department
             ORDER BY e.id;
@@ -362,12 +367,29 @@ app.get("/employees", async (req, res) => {
 
         for (const row of rows) {
             if (!employeesMap.has(row.employee_id)) {
+                let holidays = [];
+                 if (row.ics_file) {
+                    try {
+                        const holidayDates = getHolidayDatesFromICS(row.ics_file);
+                        holidays = holidayDates.map(date => ({
+                            date: date,
+                            type: 'holiday',
+                            title: `Festivo - ${row.city_name}`,
+                            city: row.city_name
+                        }));
+                    } catch (error) {
+                        console.warn(`Error parsing holidays for city ${row.city_name}:`, error);
+                    }
+                }
                 employeesMap.set(row.employee_id, {
                     id: row.employee_id,
                     name: row.name,
                     email: row.email,
                     admin: row.admin,
+                    city_id: row.city_id,
+                    city_name: row.city_name,
                     departments: [],
+                    holidays: holidays
                 });
             }
           employeesMap.get(row.employee_id).departments.push(row.department);
@@ -432,23 +454,6 @@ app.put("/employees/:id", async (req, res) => {
   }
 });
 
-// Endpoint para obtener todos los departamentos existentes en la base de datos
-app.get("/departments", async (req, res) => {
-  try {
-    const db = await getDb();
-    const rows = await db.all(`
-      SELECT id, department 
-      FROM Departments 
-      ORDER BY department;
-    `);
-    
-    res.json(rows);
-  } catch (err) {
-    console.error("Error getting departments:", err);
-    res.status(500).json({ error: "Error getting departments" });
-  }
-});
-
 // añade un nuevo departamento
 app.post("/departments", async (req, res) => {
   const { department } = req.body;
@@ -465,6 +470,23 @@ app.post("/departments", async (req, res) => {
   } catch (error) {
     console.error("Error adding department:", error);
     res.status(500).json({ error: "Error adding department" });
+  }
+});
+
+// Endpoint para obtener todos los departamentos existentes en la base de datos
+app.get("/departments", async (req, res) => {
+  try {
+    const db = await getDb();
+    const rows = await db.all(`
+      SELECT id, department 
+      FROM Departments 
+      ORDER BY department;
+    `);
+    
+    res.json(rows);
+  } catch (err) {
+    console.error("Error getting departments:", err);
+    res.status(500).json({ error: "Error getting departments" });
   }
 });
 
@@ -518,7 +540,7 @@ app.delete("/employees/:id", async (req, res) => {
   }
 });
 
-// Helper: Retry DB operations if busy
+// Helper
 async function runWithRetry(db, sql, params = [], retries = 5, delay = 200) {
   for (let i = 0; i < retries; i++) {
     try {
